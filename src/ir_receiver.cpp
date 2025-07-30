@@ -78,6 +78,15 @@ void IRReceiver::resume() {
 
 // 打印信号详细信息
 void IRReceiver::printSignalInfo() {
+    static unsigned long lastPrintTime = 0;
+    unsigned long now = millis();
+    if (lastPrintTime != 0) {
+        Serial.print("与上一个信号间隔: ");
+        Serial.print(now - lastPrintTime);
+        Serial.println(" ms");
+    }
+    lastPrintTime = now;
+
     Serial.print("信号 #");
     Serial.print(signalCount);
     Serial.print(" - 协议: ");
