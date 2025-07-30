@@ -22,7 +22,7 @@ const IRConfig DEFAULT_IR_CONFIG = {
     .bufferSize = 1024,         // 1KB缓冲区
     .timeout = 15,              // 15ms超时
     .enablePullup = true,       // 启用上拉电阻
-    .invertSignal = false        // 反转信号电平（适用于大多数红外接收模块）
+    .invertSignal = true        // 反转信号电平（适用于大多数红外接收模块）
 };
 
 // 红外接收器类
