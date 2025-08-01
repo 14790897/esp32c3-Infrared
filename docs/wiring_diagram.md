@@ -13,7 +13,7 @@
 
 ## 接线连接
 
-### 标准连接（使用GPIO2）
+### 标准连接（使用GPIO8接收，GPIO10发射）
 
 ```
 ESP32-C3 开发板          红外接收器模块
@@ -23,18 +23,30 @@ ESP32-C3 开发板          红外接收器模块
 │                 │      │                 │
 │             GND │──────│ GND             │
 │                 │      │                 │
-│           GPIO2 │──────│ OUT (Signal)    │
+│           GPIO8 │──────│ OUT (Signal)    │
+│                 │      │                 │
+└─────────────────┘      └─────────────────┘
+
+红外发射LED连接：
+ESP32-C3 开发板          红外发射LED
+┌─────────────────┐      ┌─────────────────┐
+│                 │      │                 │
+│          GPIO10 │──────│ 阳极 (+)        │
+│                 │      │                 │
+│             GND │──────│ 阴极 (-)        │
 │                 │      │                 │
 └─────────────────┘      └─────────────────┘
 ```
 
 ### 引脚说明
 
-| ESP32-C3引脚 | 红外接收器引脚 | 说明 |
-|-------------|---------------|------|
-| 3.3V        | VCC           | 电源正极 |
-| GND         | GND           | 电源负极 |
-| GPIO2       | OUT/Signal    | 数据信号输出 |
+| ESP32-C3引脚 | 连接设备 | 说明 |
+|-------------|----------|------|
+| 3.3V        | 红外接收器VCC | 电源正极 |
+| GND         | 红外接收器GND | 电源负极 |
+| GPIO8       | 红外接收器OUT | 数据信号输入 |
+| GPIO10      | 红外发射LED阳极 | 红外发射信号 |
+| GPIO9       | BOOT按钮 | 触发信号回放 |
 
 ### 可选连接（使用其他GPIO）
 
@@ -52,15 +64,14 @@ ESP32-C3 开发板          红外接收器模块
 ### 自定义引脚配置示例
 
 ```cpp
-// 使用GPIO3作为接收引脚
-IRConfig customConfig = {
-    .recvPin = 3,           // 改为GPIO3
-    .bufferSize = 1024,
-    .timeout = 15,
-    .enablePullup = true
-};
+// 在main.cpp中修改引脚定义
+#define IR_RECEIVE_PIN 8    // 红外接收引脚
+#define IR_SEND_PIN 10      // 红外发射引脚
+#define BOOT_BUTTON_PIN 9   // BOOT按钮引脚
 
-IRReceiver irReceiver(customConfig);
+// 初始化
+IrReceiver.begin(IR_RECEIVE_PIN, ENABLE_LED_FEEDBACK);
+IrSender.begin(IR_SEND_PIN);
 ```
 
 ## 物理连接建议
