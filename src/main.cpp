@@ -1,22 +1,33 @@
-
 #include <Arduino.h>
 #include <IRremote.hpp>
-#include "esp32-hal-ledc.h" // Arduino HAL（Arduino 风格）
-// 定义红外接收引脚
-// 如果GPIO10仍有LEDC冲突，请改用GPIO18
+#include "esp32-hal-ledc.h"
+
+// 定义引脚
 #define IR_RECEIVE_PIN 8
-#define IR_SEND_PIN 10    // 使用GPIO18避免LEDC冲突
-#define BOOT_BUTTON_PIN 9 // ESP32-C3 devkitm-1 的boot按键通常为GPIO9
+#define IR_SEND_PIN 10
+#define BOOT_BUTTON_PIN 9
 
-uint32_t lastProtocol = 0;
-uint64_t lastData = 0;
-uint8_t lastBits = 0;
+// 存储信号序列
+#define MAX_RAW_BUFFER 200
+#define MAX_SIGNAL_COUNT 10
 
+struct IRSignal
+{
+  uint16_t rawBuffer[MAX_RAW_BUFFER];
+  uint8_t rawLen;
+  unsigned long timestamp;
+};
+
+IRSignal signalSequence[MAX_SIGNAL_COUNT];
+uint8_t signalCount = 0;
+unsigned long lastSignalTime = 0;
+const unsigned long SIGNAL_TIMEOUT = 1000; // 1秒超时
 bool hasLastSignal = false;
-// 保存上一次原始脉冲数据
-#define MAX_RAW_BUFFER 200 // 使用较小的缓冲区避免溢出
-uint16_t lastRawBuffer[MAX_RAW_BUFFER];
-uint8_t lastRawLen = 0;
+
+// BOOT按钮控制
+unsigned long bootPressTime = 0;
+bool irReceiveEnabled = true;
+const unsigned long BOOT_DISABLE_TIME = 1000;
 
 void setup()
 {
@@ -43,8 +54,21 @@ void setup()
 
 void loop()
 {
-  // 接收部分
-  if (IrReceiver.decode())
+  unsigned long currentTime = millis();
+
+  // 检查BOOT按钮状态
+  if (bootPressTime > 0 && currentTime - bootPressTime >= BOOT_DISABLE_TIME)
+  {
+    if (!irReceiveEnabled)
+    {
+      irReceiveEnabled = true;
+      bootPressTime = 0;
+      Serial.println("红外接收已重新启用");
+    }
+  }
+
+  // 接收红外信号
+  if (irReceiveEnabled && IrReceiver.decode())
   {
     Serial.print("协议: ");
     Serial.print(IrReceiver.decodedIRData.protocol);
@@ -58,72 +82,157 @@ void loop()
     }
     Serial.println();
     IrReceiver.printIRResultShort(&Serial);
-    // 记录最后一次信号
-    lastProtocol = IrReceiver.decodedIRData.protocol;
-    lastData = IrReceiver.decodedIRData.decodedRawData;
-    lastBits = IrReceiver.decodedIRData.numberOfBits;
-    hasLastSignal = true;
-    // 保存原始脉冲
-    if (IrReceiver.decodedIRData.rawDataPtr)
-    {
-      lastRawLen = IrReceiver.decodedIRData.rawDataPtr->rawlen;
-      if (lastRawLen > MAX_RAW_BUFFER)
-        lastRawLen = MAX_RAW_BUFFER;
-      memcpy(lastRawBuffer, IrReceiver.decodedIRData.rawDataPtr->rawbuf, lastRawLen * sizeof(uint16_t));
 
-      // 打印原始脉冲数据
-      Serial.print("原始脉冲长度: ");
-      Serial.println(lastRawLen);
-      Serial.print("原始脉冲数据: ");
-      for (int i = 0; i < lastRawLen && i < 20; i++) // 只打印前20个数据避免过长
-      {
-        Serial.print(lastRawBuffer[i]);
-        Serial.print(" ");
-      }
-      if (lastRawLen > 20)
-        Serial.print("...");
-      Serial.println();
+    // 检查是否是新的操作序列
+    if (currentTime - lastSignalTime > SIGNAL_TIMEOUT || signalCount >= MAX_SIGNAL_COUNT)
+    {
+      signalCount = 0;
+      Serial.println("====== 新的遥控操作序列开始 ======");
     }
+
+    // 保存信号到序列中
+    if (IrReceiver.decodedIRData.rawDataPtr && signalCount < MAX_SIGNAL_COUNT)
+    {
+      IRSignal &currentSignal = signalSequence[signalCount];
+      currentSignal.rawLen = IrReceiver.decodedIRData.rawDataPtr->rawlen;
+      if (currentSignal.rawLen > MAX_RAW_BUFFER)
+        currentSignal.rawLen = MAX_RAW_BUFFER;
+
+      memcpy(currentSignal.rawBuffer, IrReceiver.decodedIRData.rawDataPtr->rawbuf,
+             currentSignal.rawLen * sizeof(uint16_t));
+      currentSignal.timestamp = currentTime;
+
+      Serial.print("信号 #");
+      Serial.print(signalCount + 1);
+      Serial.print(" 长度: ");
+      Serial.print(currentSignal.rawLen);
+      Serial.print(" 时间: ");
+      Serial.print(currentTime);
+      if (signalCount > 0)
+      {
+        Serial.print(" (间隔: ");
+        Serial.print(currentTime - signalSequence[signalCount - 1].timestamp);
+        Serial.print("ms)");
+      }
+      Serial.println();
+
+      // 完整输出所有原始脉冲数据
+      Serial.print("原始脉冲数据: ");
+      for (int i = 0; i < currentSignal.rawLen; i++)
+      {
+        Serial.print(currentSignal.rawBuffer[i]);
+        if (i < currentSignal.rawLen - 1)
+        {
+          Serial.print(", ");
+        }
+      }
+      Serial.println();
+      
+      // 输出ESPHome格式的高低电平序列
+      Serial.print("ESPHome格式: [");
+      for (int i = 1; i < currentSignal.rawLen; i++)
+      {
+        uint16_t duration = currentSignal.rawBuffer[i] * 50;  // IRremote默认50微秒per tick
+        if (i % 2 == 1) {
+          Serial.print(duration);  // 高电平，正数
+        } else {
+          Serial.print("-");
+          Serial.print(duration);  // 低电平，负数
+        }
+        if (i < currentSignal.rawLen - 1) {
+          Serial.print(", ");
+        }
+      }
+      Serial.println("]");
+
+      signalCount++;
+      hasLastSignal = true;
+    }
+
+    lastSignalTime = currentTime;
     IrReceiver.resume();
   }
 
-  // 检查boot按钮，按下时发射上一次信号
+  // 检查BOOT按钮，重放信号序列
   if (hasLastSignal && digitalRead(BOOT_BUTTON_PIN) == LOW)
   {
-    Serial.println("检测到BOOT按钮按下，正在发射上一次接收的红外信号...");
-    switch (lastProtocol)
+    // 禁用红外接收
+    irReceiveEnabled = false;
+    bootPressTime = currentTime;
+    Serial.println("红外接收已暂停1秒");
+
+    Serial.println("====== 开始重放遥控操作序列 ======");
+    Serial.print("共有 ");
+    Serial.print(signalCount);
+    Serial.println(" 个信号需要重放");
+
+    // 重放所有信号，保持原始时间间隔
+    for (int i = 0; i < signalCount; i++)
     {
+      IRSignal &signal = signalSequence[i];
 
-    case PULSE_DISTANCE:
-    case PULSE_WIDTH:
-    case UNKNOWN:
-    default:
-      if (lastRawLen > 0)
+      Serial.print("重放信号 #");
+      Serial.print(i + 1);
+      Serial.print(" 长度: ");
+      Serial.print(signal.rawLen);
+
+      if (signal.rawLen > 0)
       {
-        // 38kHz载波，rawbuf[0]是引导脉冲，rawlen为脉冲数
-        Serial.print("准备发送脉冲，长度: ");
-        Serial.println(lastRawLen);
-        Serial.print("发送的脉冲数据: ");
-        for (int i = 0; i < lastRawLen && i < 10; i++) // 打印前10个发送数据
+        // 等待时间间隔
+        if (i > 0)
         {
-          Serial.print(lastRawBuffer[i]);
-          Serial.print(" ");
+          unsigned long interval = signal.timestamp - signalSequence[i - 1].timestamp;
+          Serial.print(" (等待 ");
+          Serial.print(interval);
+          Serial.print("ms)");
+          Serial.println();
+          delay(interval);
         }
-        if (lastRawLen > 10)
-          Serial.print("...");
-        Serial.println();
+        else
+        {
+          Serial.println();
+        }
 
-        IrSender.sendRaw(lastRawBuffer, lastRawLen, 38);
+        // 完整输出重放的脉冲数据
+        Serial.print("重放原始脉冲: ");
+        for (int j = 0; j < signal.rawLen; j++)
+        {
+          Serial.print(signal.rawBuffer[j]);
+          if (j < signal.rawLen - 1)
+          {
+            Serial.print(", ");
+          }
+        }
+        Serial.println();
+        
+        // 输出ESPHome格式的重放序列
+        Serial.print("重放ESPHome格式: [");
+        for (int j = 1; j < signal.rawLen; j++)
+        {
+          uint16_t duration = signal.rawBuffer[j] * 50;  // IRremote默认50微秒per tick
+          if (j % 2 == 1) {
+            Serial.print(duration);  // 高电平，正数
+          } else {
+            Serial.print("-");
+            Serial.print(duration);  // 低电平，负数
+          }
+          if (j < signal.rawLen - 1) {
+            Serial.print(", ");
+          }
+        }
+        Serial.println("]");
+
+        // 发送信号
+        Serial.print("发送中...");
+        IrSender.sendRaw(signal.rawBuffer, signal.rawLen, 38);
         ledcDetach(IR_SEND_PIN);
-        Serial.println("已用sendRaw回放原始脉冲");
+        Serial.println(" 完成");
       }
-      else
-      {
-        Serial.println("暂不支持该协议的发射");
-      }
-      break;
     }
-    delay(500); // 防止长按多次发射
+
+    Serial.println("====== 信号序列重放完成 ======");
+    delay(1000); // 防止长按多次发射
   }
+
   delay(50);
 }
